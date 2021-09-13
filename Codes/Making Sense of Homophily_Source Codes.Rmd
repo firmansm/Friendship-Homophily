@@ -1,0 +1,913 @@
+---
+title: "Simulation 04282021 500"
+author: "Firman M. Firmansyah"
+date: "April 26, 2021"
+output: html_document
+---
+
+# Description
+
+This simulation aims to explain the micromechanism leading to homophily (homogenous friendship) in a diverse place.
+It shows that the interactions between tie outreachability (TO) and tie capacity (TC) always favor homophily.
+
+In the simulation, TO and TC are manipulated.
+  Tie Outreachability (p_to) = .2, .3, .4, .5, .6, .7, .8
+  Tie capacity (p_tc) = (4, 1), (8, 1)
+
+Other variables are held constant.
+  Agents (n) = 100
+  Social identity (si) = 2
+  Weights for social identity (w_si) = 1 (for si1), 2 (for si2)
+  Minority proportion (p_mino) = .5 (for si1), .5 (for si2)
+  
+This design yields 7 x 2 x 500 trials = 7000 simulations
+
+Working Paper:
+
+- Why do homogenous friendships persist in a diverse population? Making sense of homophily
+
+### Required Library
+
+```{r, results='hide', warning=FALSE, include=FALSE}
+
+library(tidyverse)
+library(igraph)
+library(viridis)
+library(summarytools)
+library(ggpubr)
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# FUNCTIONS
+
+### Agents
+
+This function generate agent population.
+
+Input:
+ n       = number of agents
+ si      = number of social identity
+ w_si    = weight for each social identity
+ p_mino  = parameter of minority for each social identity; Bernoulli distribution with regard to w_si
+ p_to    = parameter of tie outreachability; binomial distribution with trial equal to max of possible value of w_si
+ p_tc    = parameter of tie capacity
+  m_tc   = parameter of tie capacity; mean of normal distribution
+  sd_tc  = parameter of tie capacity; sd of normal distribution
+
+Output:
+ dataframe with
+  SI = social identity 1 through n
+  TO = tie outreachability
+  TC = tie capacity
+  AG = agent
+
+```{r}
+
+agents <- function(n=100, si=2, w_si=c(1,2), p_mino=c(.5, .5), p_to=.5, p_tc=c(m_tc=3, sd_tc=1)) {
+  if(length(p_mino)<si){
+    p_mino = rep(p_mino,si)
+  }
+  if(length(w_si)<si){
+    w_si = rep(w_si,si)
+  }
+  population <- matrix(NA, nrow=n, ncol=si)
+  for (i in 1:si){
+    population[,i] <- w_si[i]*rbinom(n, 1, p_mino[i])
+  }
+  population <- as.data.frame(population)
+  colnames(population) <- paste0("SI", 1:si)
+  population$TO <- rbinom(nrow(population), sum(w_si[1:si]), p_to)
+  population$TC <- abs(round(rnorm(nrow(population), p_tc[[1]], p_tc[[2]]),0)) #p_tc[[1]] for m_tc, #p_tc[[2]] for sd_tc
+  population$AG <- 1:n
+  return(population)
+}
+
+```
+
+### Friendships
+
+This function simulates friendship development, given agent population.
+
+Input:
+ dataset from agents
+
+Output:
+ dataframe with 
+  $friends_yes = developed friendship
+    AG1, AG2        = agents in the dyads
+    DIST            = social identity distance, calculated using Manhattan distance
+    AG1_TO, AG2_TO  = agents' tie outreachability
+  $friends_no  = undeveloped friendship
+    AG1, AG2        = agents in the dyads
+    DIST            = social identity distance, calculated using Manhattan distance
+    AG1_TO, AG2_TO  = agents' tie outreachability
+    
+    
+```{r}
+
+friendships <- function(data=must_from_agents) { 
+  
+  potential_friends <- t(combn(1:nrow(data), 2)) #all possible friendships
+  friends_yes <- matrix(NA, nrow(potential_friends), 5)
+  friends_no <- matrix(NA, nrow(potential_friends), 5)
+  distance_friends <- as.matrix(dist(data[,1:(ncol(data)-3)], upper=T, diag=T, method="manhattan"))
+  
+  for(i in sample(c(1:nrow(potential_friends)))){ #stocastic process in the order of friendship development
+    if (
+      (isTRUE(distance_friends[potential_friends[i,][1], potential_friends[i,][2]] <= min(data$TO[potential_friends[i,][1]], data$TO[potential_friends[i,][2]])))     
+      &
+      isTRUE(length(which(friends_yes[,1:2] == potential_friends[i,][1])) < data$TC[potential_friends[i,][1]])
+      &
+      isTRUE(length(which(friends_yes[,1:2] == potential_friends[i,][2])) < data$TC[potential_friends[i,][2]])
+    ) { friends_yes[i,] <- c(potential_friends[i,], distance_friends[potential_friends[i,][1], potential_friends[i,][2]], data$TO[potential_friends[i,][1]], data$TO[potential_friends[i,][2]]) } 
+    else {
+      friends_no[i,] <- c(potential_friends[i,], distance_friends[potential_friends[i,][1], potential_friends[i,][2]], data$TO[potential_friends[i,][1]], data$TO[potential_friends[i,][2]])
+    }
+  }
+  
+  friends_yes <- as.data.frame(na.omit(friends_yes))
+  colnames(friends_yes) <- c("AG1", "AG2", "DIST", "AG1_TO", "AG2_TO")
+  friends_no <- as.data.frame(na.omit(friends_no))
+  colnames(friends_no) <- c("AG1", "AG2", "DIST", "AG1_TO", "AG2_TO")
+  friends <- list("friends_yes" = friends_yes, "friends_no" = friends_no)
+  return(friends)
+  
+}
+
+```
+
+
+### Network Visualization 
+
+no legend label color
+
+```{r}
+
+viz_networks_no_legend_label <- function(data1=must_from_agents, data2=must_from_friendships, viz = c("race", "party", "colors", "SI2")) {
+  
+  edges <- data2$friends_yes[,1:3]
+  nodes <-data1[,c(ncol(data1),1:(ncol(data1)-3))]
+  gg <- graph_from_data_frame(d=edges, vertices=nodes, directed=FALSE)
+  
+  if (viz == "party") {
+    V(gg)[V(gg)$SI1 == 0]$shape <- "circle"
+    V(gg)[V(gg)$SI1 != 0]$shape <- "square"
+    
+    V(gg)[V(gg)$SI2 == 0]$color <- "red"
+    V(gg)[V(gg)$SI2 != 0]$color <- "blue"
+    
+    par(mar=c(0,0,0,0))
+    plotnya <- plot(gg, vertex.label.cex = .7, vertex.size=11, edge.width=2.7, vertex.label.color="white")
+
+  }
+  
+   else if (viz == "SI1") {
+    V(gg)[V(gg)$SI1 == 0]$shape <- "circle"
+    V(gg)[V(gg)$SI1 != 0]$shape <- "square"
+    
+    par(mar=c(0,0,0,0))
+    plotnya <- plot(gg, vertex.label.cex = .7, vertex.size=11, edge.width=2.7, vertex.label.color="black", vertex.color="grey")
+    legend(x=.9, y=.9, legend=c("majority", "minority"), pch=c(21,22), pt.bg="grey", cex=.7, pt.cex=1.2, title=expression('Social Identity'[1]))
+    
+    
+  }
+  
+   else if (viz == "SI2") {
+    V(gg)[V(gg)$SI2 == 0]$color <- "black"
+    V(gg)[V(gg)$SI2 != 0]$color <- "white"
+    
+    V(gg)[V(gg)$SI2 == 0]$label.color <- "white"
+    V(gg)[V(gg)$SI2 != 0]$label.color <- "black"
+    
+    par(mar=c(0,0,0,0))
+    plotnya <- plot(gg, vertex.label.cex = .7, vertex.size=11, edge.width=2.7, vertex.shapes="sphere")
+    
+  }
+  
+  else if (viz == "colors") {
+    V(gg)[V(gg)$SI1 == 0 & V(gg)$SI2 == 0]$color <- "brown3"
+    V(gg)[V(gg)$SI1 == 0 & V(gg)$SI2 != 0]$color <- "dark magenta"
+    V(gg)[V(gg)$SI1 != 0 & V(gg)$SI2 == 0]$color <- "dark green"
+    V(gg)[V(gg)$SI1 != 0 & V(gg)$SI2 != 0]$color <- "dark cyan"
+
+    plotnya <- plot(gg, vertex.label.cex = .7, vertex.size=10, edge.width=2.7, vertex.label.color="white")
+    
+  }
+  
+  else {
+    V(gg)[V(gg)$SI1 == 0]$shape <- "circle"
+    V(gg)[V(gg)$SI1 != 0]$shape <- "square"
+    
+    V(gg)[V(gg)$SI2 == 0]$color <- "white" #
+    V(gg)[V(gg)$SI2 != 0]$color <- "black" #"#4B4B4B"
+    
+    V(gg)[V(gg)$SI2 == 0]$label.color <- NA
+    V(gg)[V(gg)$SI2 != 0]$label.color <- NA
+    
+    V(gg)[V(gg)$SI2 == 0]$frame.color <- "black"
+    V(gg)[V(gg)$SI2 != 0]$frame.color <- "white"
+    
+    par(mar=c(0,0,0,0))
+    plotnya <- plot(gg, vertex.label.cex = .7, vertex.size=11, edge.width=2.7, vertex.label=NA)
+
+    
+  }
+  
+  
+  return(plotnya)
+  
+}
+
+```
+
+
+# SIMULATION
+
+## Generating Agent Populations
+
+Agents (n) = 100
+
+Demographics/Social Identity
+- Number of Social identity (si) = 2
+- Weights for social identity (w_si) = 1 (for si1), 2 (for si2)
+- Minority proportion (p_mino) = .5 (for si1), .5 (for si2)
+
+Constraints
+- Tie Outreachability (p_to) = c(.2, .3, .4, .5, .6, .7, .8)
+- Tie capacity (p_tc) = 4 (m_tc), 1 (sd_tc); 8 (m_tc), 1 (sd_tc)
+
+Experiment:
+trial: 500
+
+```{r}
+
+start_time <- Sys.time()
+
+#manipulated variables
+tie_outreachability = c(.2, .3, .4, .5, .6, .7, .8)
+tie_capacity_mean = c(4, 8)
+
+#numbers of trial
+trial <- 1:500
+
+#generating table simulation
+agent_population <- as_tibble(expand.grid(trial, tie_outreachability, tie_capacity_mean))
+colnames(agent_population) <- c("TRIAL", "TIEOUT", "TIECAP")
+agent_population$ID <- 1:nrow(agent_population) #unique ID for each simulation
+agent_population$POPULATION <- NA
+
+set.seed(04282021)
+for (i in 1:nrow(agent_population)) {  
+  agent_population$POPULATION[i] <- list(tibble(
+    agents(p_to = agent_population$TIEOUT[i],
+           p_tc = c(m_tc = agent_population$TIECAP[i], sd_tc = 1)))
+  )
+}
+
+
+#saveRDS(agent_population, "agent_population_04282021_colab.rds") #already saved
+
+end_time <- Sys.time()
+end_time-start_time
+
+```
+
+## Simulating Friendship Development Process
+
+Given agent populations, it simulates the friendship development processes.
+
+```{r}
+
+start_time <- Sys.time()
+set.seed(04282021)
+
+agent_friendship <- tibble(ID=agent_population$ID, FRIENDSHIP =NA)
+
+for (i in 1:nrow(agent_friendship)) {
+  agent_friendship$FRIENDSHIP[i] <- list(tibble(results = friendships(as.data.frame(agent_population$POPULATION[i]))))
+}
+
+#saveRDS(agent_friendship, "agent_friendship_04282021_colab.rds") #already saved
+
+end_time <- Sys.time()
+end_time-start_time
+
+```
+
+## Dataset
+
+Save simulated datasets
+
+```{r}
+
+#saveRDS(agent_population, "agent_population_04282021.rds")
+#saveRDS(agent_friendship, "agent_friendship_04282021.rds")
+
+```
+
+Load datasets
+
+### Simulation Results
+
+```{r}
+
+agent_population <- readRDS("agent_population_04282021_colab.rds")
+agent_friendship <- readRDS("agent_friendship_04282021_colab.rds")
+
+```
+
+### Analysis Results
+
+```{r}
+
+agent_happy <- read_csv("agent_happy_04282021.csv")
+homophily_test_out <- read_csv("homophily_test_out_07162021.csv")
+
+```
+
+
+## Unnest Population Dataset
+
+```{r}
+
+all_agent_populations <- agent_population %>% unnest(POPULATION)
+
+```
+
+## Unnest Friendship Dataset
+
+```{r}
+
+all_agent_friendships <- agent_friendship %>% unnest(FRIENDSHIP)
+
+all_agent_friendships_yes <- all_agent_friendships %>% filter(row_number() %% 2 == 1) ## Select odd rows
+all_agent_friendships_no <- all_agent_friendships %>% filter(row_number() %% 2 == 0) ## Select even rows  
+
+all_agent_friendships_yes_data <- left_join( all_agent_friendships_yes %>% unnest(results),
+           all_agent_populations %>% select(TRIAL, ID, TIEOUT, TIECAP), by = "ID")
+
+```
+
+
+# ANALYSIS
+
+## Social Identity (SI)
+
+### SI Tables
+
+```{r}
+
+all_agent_populations$SI <- paste(all_agent_populations$SI1, ifelse(all_agent_populations$SI2 == 2, 1, 0), sep="")
+
+
+#short table
+social_identity_short_table <- all_agent_populations %>%
+  group_by(TIEOUT, TIECAP, TRIAL, SI) %>%
+  count(SI) %>%
+  pivot_wider(names_from = SI, values_from = n) %>%
+  group_by(TIEOUT, TIECAP) %>%
+  summarize(MEAN_SI_00 = round(mean(`00`),2), SD_00 = round(sd(`00`),2), 
+            MEAN_SI_01 = round(mean(`01`),2), SD_01 = round(sd(`01`),2), 
+            MEAN_SI_10 = round(mean(`10`),2), SD_10 = round(sd(`10`),2), 
+            MEAN_SI_11 = round(mean(`11`),2), SD_11 = round(sd(`11`),2))
+
+social_identity_short_table
+
+#long table
+social_identity_long_table <- all_agent_populations %>%
+  group_by(TRIAL, TIEOUT, TIECAP, SI) %>%
+  count(SI) %>%
+  group_by (TIEOUT, TIECAP) %>%
+  mutate(PERCENTAGE = n/sum(n))
+
+social_identity_long_table
+  
+```
+
+### SI Visualizations
+
+```{r}
+
+# New facet label names for TO parameters
+p_to_labs <- c("TO, q = .2", "TO, q = .3", "TO, q = .4", "TO, q = .5", "TO, q = .6", "TO, q = .7", "TO, q = .8" )
+names(p_to_labs) <- c(.2, .3, .4, .5, .6, .7, .8)
+
+# New facet label names for TC parameters
+p_tc_labs <- c("TC, \u03BC = 4, \u03C3\U00B2 = 1", "TC, \u03BC = 8, \u03C3\U00B2 = 1") #unicodes for mu and sigma square
+names(p_tc_labs) <- c(4, 8)
+
+SI_plot_1 <- social_identity_long_table %>%
+  ggplot(aes(x = SI, y = PERCENTAGE, fill=SI)) + 
+  geom_bar(stat = "identity") +
+  labs(title = "Social Identity Distribution", 
+       x = "Social Identities", y = "Proportion (%)") + 
+  facet_grid(TIECAP ~ TIEOUT, labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  scale_y_continuous(labels=function(x) sprintf("%.2f", x)) +
+  scale_fill_manual(name="Social Identities:", 
+                    labels = c("00 (round-white)", "01 (round-black)", "10 (square-white)", "11 (square-black)"), 
+                    values = c("#54436B", "#50CB93", "darkgrey", "#FBD400")) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+SI_plot_1
+
+
+SI_plot_2 <- social_identity_long_table %>%
+  ggplot(aes(x=TRIAL, y=n, fill=SI)) +
+  geom_area() + facet_grid(TIECAP ~ TIEOUT, 
+                           labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(title = "Generated Social Identity", 
+    x = "-th Simulation", y = "Counts (agents)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Social Identities:", 
+                    labels = c("00 (round-white)", "01 (round-black)", "10 (square-white)", "11 (square-black)"), 
+                    values = c("#AAAAAA", "#476072", "#548CA8", "334257")) + 
+  theme(axis.text.x = element_text(angle = 90), 
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+SI_plot_2
+
+SI_plot_3 <- social_identity_long_table %>%
+  ggplot(aes(x=TRIAL, y=n, fill=SI)) +
+  geom_area() + facet_grid(TIECAP ~ TIEOUT, 
+                           labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(#title = "Generated Social Identity", 
+    x = "-th Simulation\n", y = "Counts (agents)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Social Identities:", 
+                    labels = c("00 (round-white)", "01 (round-black)", "10 (square-white)", "11 (square-black)"), 
+                    values = c("#AAAAAA", "#476072", "#548CA8", "334257")) + 
+  theme(axis.text.x = element_text(angle = 90), 
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+SI_plot_3
+
+```
+
+
+## Tie Outreachability (TO)
+
+### TO Tables
+
+
+```{r}
+
+#short table
+tie_outreacability_short_table <- all_agent_populations %>%
+  group_by(TIEOUT, TIECAP, TRIAL, TO) %>%
+  count(TO) %>%
+  pivot_wider(names_from = TO, values_from = n) %>%
+  group_by(TIEOUT, TIECAP) %>%
+  summarize(MEAN_TO_0 = round(mean(`0`),2), SD_0 = round(sd(`0`),2), 
+            MEAN_TO_1 = round(mean(`1`),2), SD_1 = round(sd(`1`),2), 
+            MEAN_TO_2 = round(mean(`2`),2), SD_2 = round(sd(`2`),2), 
+            MEAN_TO_3 = round(mean(`3`),2), SD_3 = round(sd(`3`),2))
+
+tie_outreacability_short_table
+
+#long table
+tie_outreachability_long_table <- all_agent_populations %>%
+  group_by(TRIAL, TIEOUT, TIECAP) %>%
+  count(TO) %>%
+  group_by (TIEOUT, TIECAP) %>%
+  mutate(PERCENTAGE = n/sum(n))
+
+tie_outreachability_long_table
+
+```
+
+### TO Visualizations
+
+```{r}
+
+TO_plot_1 <- tie_outreachability_long_table %>% 
+ggplot(aes(x = TO, y = PERCENTAGE)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Tie Outreachability Distribution", x = "Tie Outreachability", y = "Proportion (%)") + 
+  facet_grid(TIECAP ~ TIEOUT, labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  scale_y_continuous(labels=function(x) sprintf("%.2f", x)) + theme(plot.title = element_text(hjust = 0.5))
+
+TO_plot_1
+
+TO_plot_2 <- tie_outreachability_long_table %>%
+  mutate(TO = as.character(TO)) %>%
+  ggplot(aes(x=TRIAL, y=n, fill=TO)) +
+  geom_area() + facet_grid(TIECAP ~ TIEOUT,
+                           labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(title = "Generated Tie Outreachability", 
+       x = "-th Simulation", y = "Counts (agents)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Tie Outreachability:", labels = c("0", "1", "2", "3"), values = c("#D7B19D", "#C68B59", "#865439", "#402218")) + 
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+TO_plot_2 
+
+TO_plot_3 <- tie_outreachability_long_table %>%
+  mutate(TO = as.character(TO)) %>%
+  ggplot(aes(x=TRIAL, y=n, fill=TO)) +
+  geom_area() + facet_grid(TIECAP ~ TIEOUT,
+                           labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(#title = "Generated Tie Outreachability", 
+       x = "-th Simulation\n\n", y = "Counts (agents)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Tie Outreachability:", labels = c("0", "1", "2", "3"), values = c("#D7B19D", "#C68B59", "#865439", "#402218")) + 
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+TO_plot_3
+
+```
+
+
+
+
+## Tie Capacity (TC)
+
+### TC Tables
+
+
+
+```{r}
+
+all_agent_populations %>%
+  group_by(TIEOUT, TIECAP) %>%
+  freq(TC, report.nas = F)
+
+tie_capacity_long_table <- all_agent_populations %>%
+  group_by(TRIAL, TIEOUT, TIECAP) %>%
+  count(TC) %>%
+  group_by (TIEOUT, TIECAP) %>%
+  mutate(PERCENTAGE = n/sum(n))
+
+tie_capacity_long_table
+
+
+```
+
+
+### TC Visualizations
+
+
+
+```{r}
+
+TC_plot_1 <- tie_capacity_long_table %>%
+ggplot(aes(x = TC, y = PERCENTAGE)) + 
+  geom_bar(stat = "identity", color="grey37") +
+  labs(title = "Tie Capacity Distribution", x = "Tie Capacity", y = "Proportion (%)") + 
+  facet_grid(TIECAP ~ TIEOUT,
+             labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  scale_y_continuous(labels=function(x) sprintf("%.2f", x)) + 
+  scale_x_continuous(breaks = c(0, 4, 8, 12)) + #+ scale_x_continuous(breaks = c(2, 4, 6, 8, 10))
+theme(plot.title = element_text(hjust = 0.5))
+
+TC_plot_1
+
+coba <- tie_capacity_long_table %>%
+  mutate(TC = as.character(TC))
+
+coba$TC <- factor(coba$TC, levels = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13" ))
+
+TC_plot_2 <- coba %>%
+  ggplot(aes(x=TRIAL, y=n, fill=TC)) +
+  geom_area() + facet_grid(TIECAP ~ TIEOUT,
+                            labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(title = "Generated Tie Capacity (TC)", 
+    x = "-th Simulation", y = "Counts (agents)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Tie Capacity", 
+                    labels = c("0", "1", "2", "3", "4", 
+                               "5", "6", "7", "8", "9", 
+                               "10", "11", "12", "13"), 
+                    values = c("#0A1931", "#996301", "#1B2A42", "#AA7412", "#3D0D0D", 
+                               "#BB8523", "#3D4C64", "#CC9634", "#5F1F2F", "#DDA745",
+                               "#5F6E86", "#EEB856", "#6F7F97", "#FFC967")) +
+  theme(axis.text.x = element_text(angle = 90), 
+        plot.title = element_text(hjust = 0.5), 
+        legend.position = "right")
+
+TC_plot_2
+
+TC_plot_3 <- coba %>%
+  ggplot(aes(x=TRIAL, y=n, fill=TC)) +
+  geom_area() + facet_grid(TIECAP ~ TIEOUT,
+                            labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(x = "-th Simulation", y = "Counts (agents)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Tie Capacity", 
+                    labels = c("0", "1", "2", "3", "4", 
+                               "5", "6", "7", "8", "9", 
+                               "10", "11", "12", "13"), 
+                    values = c("#0A1931", "#996301", "#1B2A42", "#AA7412", "#3D0D0D", 
+                               "#BB8523", "#3D4C64", "#CC9634", "#5F1F2F", "#DDA745",
+                               "#5F6E86", "#EEB856", "#6F7F97", "#FFC967")) +
+  theme(axis.text.x = element_text(angle = 90), 
+        plot.title = element_text(hjust = 0.5), 
+        legend.position = "right")
+
+TC_plot_3
+
+```
+
+
+
+## Developed Friendships
+
+### Friendship Tables
+
+```{r, warning=F}
+
+#COUNT
+
+friend_dyad_count <- tibble(ID=agent_friendship$ID, Y0=NA, Y1=NA, Y2=NA, Y3=NA, N0=NA, N1=NA, N2=NA, N3=NA)
+for (i in 1:nrow(friend_dyad_count)) {
+  friend_dyad_count$Y0[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_yes$DIST == 0)
+  friend_dyad_count$Y1[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_yes$DIST == 1)
+  friend_dyad_count$Y2[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_yes$DIST == 2)
+  friend_dyad_count$Y3[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_yes$DIST == 3)
+  
+  friend_dyad_count$N0[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_no$DIST == 0)
+  friend_dyad_count$N1[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_no$DIST == 1)
+  friend_dyad_count$N2[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_no$DIST == 2)
+  friend_dyad_count$N3[i] <- sum(agent_friendship$FRIENDSHIP[i][[1]][[1]]$friends_no$DIST == 3)
+}
+
+#summary count of developed dyads
+summ_friend_dyad_count <- left_join(friend_dyad_count, agent_population[,2:4], by="ID") %>%
+  group_by(TIEOUT, TIECAP) %>%
+  summarize(MEAN_0_DIST = round(mean(Y0),2), SD_0_DIST = round(sd(Y0),2), MEAN_1_DIST = round(mean(Y1),2), SD_1_DIST = round(sd(Y1),2), MEAN_2_DIST = round(mean(Y2),2), SD_2_DIST = round(sd(Y2),2), MEAN_3_DIST = round(mean(Y3),2), SD_3_DIST = round(sd(Y3),2))
+
+summ_friend_dyad_count
+
+#PERCENT
+
+friend_dyad_percent <- tibble(ID = friend_dyad_count$ID)
+
+#percentage of developed dyads
+friend_dyad_percent$Y0PER <- friend_dyad_count$Y0/(friend_dyad_count$Y0+friend_dyad_count$Y1+friend_dyad_count$Y2+friend_dyad_count$Y3)*100
+friend_dyad_percent$Y1PER <- friend_dyad_count$Y1/(friend_dyad_count$Y0+friend_dyad_count$Y1+friend_dyad_count$Y2+friend_dyad_count$Y3)*100
+friend_dyad_percent$Y2PER <- friend_dyad_count$Y2/(friend_dyad_count$Y0+friend_dyad_count$Y1+friend_dyad_count$Y2+friend_dyad_count$Y3)*100
+friend_dyad_percent$Y3PER <- friend_dyad_count$Y3/(friend_dyad_count$Y0+friend_dyad_count$Y1+friend_dyad_count$Y2+friend_dyad_count$Y3)*100
+
+#summary percentage of developed dyads
+summ_friend_dyad_percent <- left_join(friend_dyad_percent, agent_population[,2:4], by="ID") %>%
+  group_by(TIEOUT, TIECAP) %>%
+  summarize(MEAN_0_DIST = round(mean(Y0PER),2), SD_0_DIST = round(sd(Y0PER),2), MEAN_1_DIST = round(mean(Y1PER),2), SD_1_DIST = round(sd(Y1PER),2), MEAN_2_DIST = round(mean(Y2PER),2), SD_2_DIST = round(sd(Y2PER),2), MEAN_3_DIST = round(mean(Y3PER),2), SD_3_DIST = round(sd(Y3PER),2)) #MEYO0
+
+summ_friend_dyad_percent
+
+
+friend_freq_df <- left_join(agent_population[,1:4], friend_dyad_count[,1:5], by="ID")
+
+tab_friend_freq <- friend_freq_df %>%
+  pivot_longer(Y0:Y3, names_to = "DYAD_DIST", values_to = "COUNT")
+
+```
+
+
+### Friendship Visualizations
+
+```{r}
+
+friendships_plot_1 <- tab_friend_freq %>%
+  ggplot(aes(x = DYAD_DIST, y = COUNT)) + 
+  geom_bar(stat = "identity") +
+  labs(title = "Developed Friendship Distribution", 
+       x = "Social Identity Distance", y = "Proportion (%)") + 
+  facet_grid(TIECAP ~ TIEOUT, labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  scale_y_continuous(labels=function(x) sprintf("%.2f", x)) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+friendships_plot_1
+friendships_plot_2 <- tab_friend_freq %>%
+  ggplot(aes(x=TRIAL, y=COUNT, fill=DYAD_DIST)) +
+  geom_area() + 
+  facet_grid(TIECAP ~ TIEOUT,
+    labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(title = "Numbers of Developed Friendships", x = "-th Simulation", y = "Counts (dyads)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Social Identity Distance", 
+                    labels = c("0", "1", "2", "3"), 
+                    values = c("#54436B", "#50CB93", "#C7FED8", "#FBD400")) + 
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+  
+friendships_plot_2 
+
+
+friendships_plot_3 <- tab_friend_freq %>%
+  ggplot(aes(x=TRIAL, y=COUNT, fill=DYAD_DIST)) +
+  geom_area() + 
+  facet_grid(TIECAP ~ TIEOUT,
+    labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(#title = "Numbers of Developed Friendships", 
+    x = "-th Simulation", y = "Counts (dyads)") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Friendships:", 
+                    labels = c("full homogeneous", "shape homogeneous", "color homogenous", "full heterogeneous"), 
+                    values = c("#54436B", "#50CB93", "#C7FED8", "#FBD400")) + 
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+  
+friendships_plot_3 
+
+```
+
+
+### Friendship Networks Viz
+
+#### TO 0.2 - 0.8, TC 4
+
+```{r}
+
+viz_networks_no_legend_label(agent_population$POPULATION[[33]], agent_friendship$FRIENDSHIP[33][[1]][[1]], viz="race") #TO .2
+viz_networks_no_legend_label(agent_population$POPULATION[[533]], agent_friendship$FRIENDSHIP[533][[1]][[1]], viz="race") #TO .3
+viz_networks_no_legend_label(agent_population$POPULATION[[1033]], agent_friendship$FRIENDSHIP[1033][[1]][[1]], viz="race") #TO .4
+viz_networks_no_legend_label(agent_population$POPULATION[[1533]], agent_friendship$FRIENDSHIP[1533][[1]][[1]], viz="race") #TO .5
+viz_networks_no_legend_label(agent_population$POPULATION[[2033]], agent_friendship$FRIENDSHIP[2033][[1]][[1]], viz="race") #TO .6
+viz_networks_no_legend_label(agent_population$POPULATION[[2533]], agent_friendship$FRIENDSHIP[2533][[1]][[1]], viz="race") #TO .7
+viz_networks_no_legend_label(agent_population$POPULATION[[3033]], agent_friendship$FRIENDSHIP[3033][[1]][[1]], viz="race") #TO .8
+
+```
+
+
+#### TO 0.2 - 0.8, TC 8
+
+```{r}
+
+viz_networks_no_legend_label(agent_population$POPULATION[[3533]], agent_friendship$FRIENDSHIP[3533][[1]][[1]], viz="race") #TO .2
+viz_networks_no_legend_label(agent_population$POPULATION[[4033]], agent_friendship$FRIENDSHIP[4033][[1]][[1]], viz="race") #TO .3
+viz_networks_no_legend_label(agent_population$POPULATION[[4533]], agent_friendship$FRIENDSHIP[4533][[1]][[1]], viz="race") #TO .4
+viz_networks_no_legend_label(agent_population$POPULATION[[5033]], agent_friendship$FRIENDSHIP[5033][[1]][[1]], viz="race") #TO .5
+viz_networks_no_legend_label(agent_population$POPULATION[[5533]], agent_friendship$FRIENDSHIP[5533][[1]][[1]], viz="race") #TO .6
+viz_networks_no_legend_label(agent_population$POPULATION[[6033]], agent_friendship$FRIENDSHIP[6033][[1]][[1]], viz="race") #TO .7
+viz_networks_no_legend_label(agent_population$POPULATION[[6533]], agent_friendship$FRIENDSHIP[6533][[1]][[1]], viz="race") #TO .8
+
+```
+
+
+### Homophily Test
+
+```{r}
+
+start_time <- Sys.time()
+
+homophily_test_in <- agent_friendship[,] #input
+homophily_test_out <- agent_friendship[,1] #outputdata
+
+homophily_test_out$CHISQ <- NA #for chi-square stats 
+homophily_test_out$DF <- NA
+homophily_test_out$PVAL <- NA
+
+for(i in 1:nrow(homophily_test_out)) {
+  
+  #agent_friendship$FRIENDSHIP
+  friendships_df <- homophily_test_in$FRIENDSHIP[[i]]$results
+  
+  #calculate chi-square
+  expected_friendships <- table(c(friendships_df$friends_yes$DIST, friendships_df$friends_no$DIST))
+  developed_friendships <- table(c(friendships_df$friends_yes$DIST))
+  tab <- as.data.frame(expected_friendships)
+  for (j in 1:nrow(tab)) {
+    tab$Developed[j] <- developed_friendships[j]
+    tab[is.na(tab)] <- 0
+  }
+  
+  hohe_sign <- chisq.test(as.matrix(tab[,2:3]))
+  #hohe_sign
+  
+  homophily_test_out$CHISQ[i] <- hohe_sign$statistic
+  homophily_test_out$DF[i] <- hohe_sign$parameter
+  homophily_test_out$PVAL[i] <- hohe_sign$p.value
+}
+
+homophily_test_out
+
+#write_csv(homophily_test_out, "homophily_test_out_07162021.csv")
+
+end_time <- Sys.time()
+end_time-start_time
+
+```
+
+#### Friendship Chi-Square Tables
+
+```{r}
+
+homophily_test_out_tab <- left_join(agent_population[,1:4], homophily_test_out, by="ID")
+homophily_test_out_tab
+
+```
+
+#### Friendship Chi-Square Viz
+
+```{r}
+
+chisquare_viz <- ggplot(homophily_test_out_tab, aes(x=TRIAL, y=CHISQ)) +
+  geom_line(aes(color="red")) + 
+  facet_grid(TIECAP ~ TIEOUT,
+        labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(#title = "Chi-Square Values", 
+    x = "-th Simulation", 
+    y = "Chi-Square value") + 
+  scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  theme(axis.text.x = element_text(angle = 90), legend.position="none",
+         plot.title = element_text(hjust = 0.5))
+
+ggplot(homophily_test_out_tab, aes(x=TRIAL, y=round(PVAL,3))) +
+  geom_line() + 
+  facet_grid(TIECAP ~ TIEOUT,
+             labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(title = "Chi-Square's p-Values", x = "-th Simulation", y = "p-value") + scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  theme(axis.text.x = element_text(angle = 90),  plot.title = element_text(hjust = 0.5)) + ylim(c(0,.05))
+
+```
+
+
+## Satisifed Agents
+
+### Satisfied Agents Count
+
+Number of unsatisfied agents = 100 (total agents) - satisfied agents
+
+Count numbers of satisfied agents whose numbers of friends are equal or more than threshold.
+
+```{r, warning=FALSE}
+
+start_time <- Sys.time()
+
+agent_happy <- tibble(ID=agent_population$ID)
+agent_happy$HAPPY <- NA
+threshold = .5
+
+for (i in 1:nrow(agent_happy)) {
+  data1=agent_population$POPULATION[[i]]
+  data2=agent_friendship$FRIENDSHIP[[i]][[1]][[1]]
+  for (j in 1:nrow(data1)){
+    data1$ALTS[j] <- length(which(data2[,1:2] == data1$AG[j]))
+    if (data1$ALTS[j] >= threshold*data1$TC[j]){
+      data1$HAPPY[j] <- 1
+    }
+    else {data1$HAPPY[j] <- 0 }
+  }
+  
+  agent_happy$HAPPY[i] <- sum(data1$HAPPY)
+  
+}
+
+agent_happy
+
+#write_csv(agent_happy, "agent_happy_04282021.csv")
+
+end_time <- Sys.time()
+end_time-start_time
+
+```
+
+### Satisfied Agent Tables
+
+```{r}
+
+summ_agent_satisfied <- left_join(agent_happy, agent_population[,2:4], by="ID") %>%
+  group_by(TIEOUT, TIECAP) %>%
+  summarize(MEAN_SATISFIED = round(mean(HAPPY),2), SD_SATISFIED = round(sd(HAPPY),2))
+
+summ_agent_satisfied
+
+```
+
+### Satisfied Agent Visualizations
+
+```{r}
+happy_agent_df <- left_join(agent_population[,1:4], agent_happy, by="ID")
+happy_agent_df$UNHAPPY <- 100-happy_agent_df$HAPPY
+
+satisfied_agents_plot <- happy_agent_df %>%
+  pivot_longer(HAPPY:UNHAPPY, names_to = "Happiness", values_to = "Count") %>%
+  ggplot(aes(x=TRIAL, y=Count, fill=Happiness)) +
+  geom_area() + 
+  facet_grid(TIECAP ~ TIEOUT,
+             labeller = labeller(TIECAP = p_tc_labs, TIEOUT = p_to_labs)) + 
+  labs(#title = "Numbers of Satisfied Agents", 
+    x = "-th Simulation", y = "Counts (agents)") + scale_x_continuous(breaks = c(1, 125, 250, 375, 500)) +
+  scale_fill_manual(name="Agents:", labels = c("satisfied", "unsatisfied"), values = c("#F79F24", "darkblue")) + 
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")
+
+satisfied_agents_plot
+```
+
+
+
